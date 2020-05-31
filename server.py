@@ -1,54 +1,68 @@
 import socket
-import select
-import errno
-import sys
+import time
+# a socket is an endpoint, that receives data
+import pickle
+import select # gives us OS IO capabilities
 
 HEADER_LENGTH = 10
-
 IP = "127.0.0.1"
 PORT = 1234
 
-my_username = input("Username: ")
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect((IP, PORT))
-client_socket.setblocking(False)
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) #sets 1 to be true, otherwise this line will allow us to reconnect
 
-username = my_username.encode("utf-8")
-username_header = f"{len(username):<{HEADER_LENGTH}}".encode("utf-8")
-client_socket.send(username_header + username)
+server_socket.bind((IP, PORT))
 
-while True: #send and receive messages
-    message = input(f"{my_username} > ")
-    #message = ""
+server_socket.listen()
 
-    if message:
-        message = message.encode("utf-8")
-        message_header = f"{len(message):<{HEADER_LENGTH}}".encode("utf-8")
-        client_socket.send(message_header + message)
+sockets_list = [server_socket]
 
+clients = {}
+
+def receive_message(client_socket):
     try:
-        while True:
-            #receive things
-            username_header = client_socket.recv(HEADER_LENGTH)
-            if not len(username_header):
-                print("Connection closed by the server")
-                sys.exit()
+        message_header = client_socket.recv(HEADER_LENGTH)
+        if not len(message_header):
+            return False
+        message_length = int(message_header.decode("utf-8").strip())
+        return {"header": message_header, "data": client_socket.recv(message_length)}
 
-            username_length = int(username_header.decode("utf-8").strip())
-            username = client_socket.recv(username_length).decode("utf-8")
+    except: #the only way to reach this is if someone somehow broke their script
+        return False
+while True:
+    read_sockets, _, exception_sockets = select.select(sockets_list, [], sockets_list) #select.select takes in 3 parameters, the things you want to read, sockets you want to write, and sockets you want to air on
 
-            message_header = client_socket.recv(HEADER_LENGTH)
-            message_length = int(message_header.decode("utf-8").strip())
-            message = client_socket.recv(message_length).decode("utf-8")
+    for notified_socket in read_sockets:
+        if notified_socket == server_socket:
+            client_socket, client_address = server_socket.accept()
 
-            print(f"{username} > {message}")
+            user = receive_message(client_socket)
+            if user is False:
+                continue
+            sockets_list.append(client_socket)
 
-    except IOError as e:
-        if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
-            print("Reading error!", str(e))
-            sys.exit()
-        continue
+            clients[client_socket] = user
 
-    except Exception as e:
-        print("Some error occurred!", str(e))
-        sys.exit()
+            print(f"Accepted new connection from {client_address[0]}:{client_address[1]} username:{user['data'].decode('utf-8')}")
+        else:
+            message = receive_message(notified_socket)
+            if message is False:
+                print(f"Closed connection from {clients[notified_socket]['data'].decode('utf-8')}")
+                sockets_list.remove(notified_socket)
+                del clients[notified_socket]
+                continue
+            user = clients[notified_socket]
+
+            print(f"Received message from {user['data'].decode('utf-8')}: {message['data'].decode('utf-8')}")
+
+            for client_socket in clients:
+                if client_socket != notified_socket:
+                    client_socket.send(user['header'] + user['data'] + message['header'] + message['data']) #the username with the header information and we send in a message with its header message data
+    for notified_socket in exception_sockets:
+        sockets_list.remove(notified_socket)
+        del clients[notified_socket]
+
+
+
+
+
